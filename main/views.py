@@ -1,4 +1,5 @@
 from typing import Any
+from django.db.models.query import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render , redirect
 from django.views.generic import ListView , DetailView
@@ -6,6 +7,8 @@ from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.contrib import messages
 from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.forms import AuthenticationForm , UserCreationForm
+from django.db.models import Q
+from django.views.generic import ListView
 from .models import (
     GeneralSlider , HeaderTop , Category , Product,
     CooperativeCompanies , GetInTouch , Store,
@@ -65,8 +68,7 @@ class HomeListView(ListView):
 
 class ShopListView(ListView):
     template_name = 'shop.html'
-    paginate_by = 2  # Number of products per page
-
+    paginate_by = 2  
 
     @staticmethod
     def __extract_all_data(request):
@@ -79,52 +81,84 @@ class ShopListView(ListView):
         try:
             products = paginator.page(page)
         except PageNotAnInteger:
-            # If page is not an integer, deliver first page.
+     
             products = paginator.page(1)
         except EmptyPage:
-            # If page is out of range, deliver last page of results.
+       
             products = paginator.page(paginator.num_pages)
 
         context = {
             'nav': 'shop',
             'products': products,
-            'categories':categories,
-            'cart_items':cart_items,
-
+            'categories': categories,
+            'cart_items': cart_items,
         }
 
         return context
 
-
     @staticmethod
-    def product_filter_by_price(queryset , price_ranges):
-        new_queryset = []
+    def product_filter_by_price(queryset, price_ranges):
+        new_queryset = queryset.none()
         for price in price_ranges:
             try:
-                upper_bound , lower_bound = map(int , price.replace('$' , '').split(' - '))
+                upper_bound, lower_bound = map(int, price.replace('$', '').split(' - '))
             except Exception as ex:
-                price(ex)
-                return queryset
+                print(ex)
             else:
-                queryset = queryset.filter(price__range=(lower_bound , upper_bound))
-                new_queryset.append(queryset)
+                new_queryset |= queryset.filter(price__range=(lower_bound, upper_bound))
+        return new_queryset
 
     @staticmethod
     def product_filter_by_color(queryset, color_ids):
         try:
-            queryset = queryset.filter(colors__in = color_ids)
+            queryset = queryset.filter(colors__id__in=color_ids)
         except Exception as ex:
-            return queryset
+            print(ex)
+        return queryset
 
     @staticmethod
     def product_filter_by_size(queryset, size_ids):
-        queryset = queryset.filter(sizes__in = size_ids)
-
-
+        return queryset.filter(sizes__id__in=size_ids)
 
     def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+      
+        query = request.GET.get('q', '')
+        price_ranges = request.GET.getlist('price_range')
+        color_ids = request.GET.getlist('color')
+        size_ids = request.GET.getlist('size')
 
-        return render(request , self.template_name , context=self.__extract_all_data(request))
+     
+        products = Product.objects.all()
+
+   
+        if query:
+            products = products.filter(
+                Q(name__icontains=query) |
+                Q(description__icontains=query) |
+                Q(category__name__icontains=query)
+            )
+
+        if price_ranges:
+            products = self.product_filter_by_price(products, price_ranges)
+
+        if color_ids:
+            products = self.product_filter_by_color(products, color_ids)
+
+        if size_ids:
+            products = self.product_filter_by_size(products, size_ids)
+
+       
+
+        context = {
+            'nav': 'shop',
+            'products': products,
+            'categories': Category.objects.all(),
+            'cart_items': ShoppingCart.objects.filter(user=request.user),
+        }
+
+        return render(request, self.template_name, context=context)
+    
+    
 
 
 
@@ -282,3 +316,29 @@ def logout_request(request):
 	messages.info(request, "You have successfully logged out.") 
 	return redirect("home")
 
+
+class Search(ListView):
+    template_name = 'search.html'
+    context_object_name = 'products'
+    paginate_by = 2
+
+    def get(self, request, *args, **kwargs):
+        query = self.request.GET.get('q')
+
+        if not query:
+            return redirect('shop')
+
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        query = self.request.GET.get('q')
+        return Product.objects.filter(
+            Q(name__icontains=query) |
+            Q(description__icontains=query) |
+            Q(category__name__icontains=query)
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['query'] = self.request.GET.get('q', '')
+        return context
